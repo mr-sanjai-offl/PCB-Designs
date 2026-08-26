@@ -83,8 +83,22 @@ jobs:
           echo "sch=$sch" >> "$GITHUB_OUTPUT"
           echo "pcb=$pcb" >> "$GITHUB_OUTPUT"
 
+      - name: Check existing renders
+        id: renders
+        shell: bash
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          if [ -d "$PROJECT/renders" ] && find "$PROJECT/renders" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Render directory already contains output files; skipping re-render."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Render PCB
-        if: steps.files.outputs.pcb != ''
+        if: steps.files.outputs.pcb != '' && steps.renders.outputs.exists != 'true'
         uses: linalinn/kicad-render@main
         with:
           pcb_file: ${{ steps.files.outputs.pcb }}
