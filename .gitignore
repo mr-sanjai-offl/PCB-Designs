@@ -1,5 +1,6 @@
 # KiCad temporary/backup files
 .history/
+*.kicad_prl
 *.bak
 *.kicad_pcb-bak
 *.kicad_sch-bak
