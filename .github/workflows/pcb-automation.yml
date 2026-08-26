@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          python3 <<'PY'
           import json
           from pathlib import Path
 
@@ -38,8 +38,10 @@ jobs:
                   projects.add(str(f.parent))
 
           projects = sorted(projects)
-          print("projects=" + json.dumps(projects))
-          print("Found:", projects)
+          payload = json.dumps(projects)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"projects={payload}\n")
+          print(f"Discovered project directories: {projects}")
           PY
 
   process:
