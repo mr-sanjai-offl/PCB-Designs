@@ -33,7 +33,7 @@ KiCad PCB design project for Ac To Dc Converter.
 
 ### Bottom View
 <p align="center">
-<img src="./renders/bottom.png" alt="Bottom View" width="60%" />
+<img src="./renders/bottom.png" alt="Bottom View" width="100%" />
 </p>
 
 ### Rotating 3D View
@@ -43,7 +43,7 @@ KiCad PCB design project for Ac To Dc Converter.
 
 ### Top View
 <p align="center">
-<img src="./renders/top.png" alt="Top View" width="60%" />
+<img src="./renders/top.png" alt="Top View" width="100%" />
 </p>
 
 ## KiCad Files
