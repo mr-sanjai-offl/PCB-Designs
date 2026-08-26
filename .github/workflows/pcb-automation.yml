@@ -440,22 +440,25 @@ jobs:
                   text = readme.read_text(encoding="utf-8", errors="ignore")
 
                   m = re.search(r"^#\\s+(.+)$", text, re.M)
-                  if m:
+                  if m and m.group(1) is not None:
                       title = m.group(1).strip()
 
                   m = re.search(
                       r"<!--\\s*PROJECT_DESCRIPTION\\s*-->\\s*(.*?)\\s*<!--\\s*/PROJECT_DESCRIPTION\\s*-->",
                       text, re.S | re.I
                   )
-                  if m:
+                  if m and m.group(1) is not None:
                       description = " ".join(m.group(1).split())
 
                   m = re.search(r"^## Components \\((\\d+)\\)", text, re.M)
-                  if m:
-                      components = int(m.group(1))
+                  if m and m.group(1) is not None:
+                      try:
+                          components = int(m.group(1))
+                      except ValueError:
+                          components = 0
 
                   m = re.search(r"\\| Dimensions \\| ([^|]+) \\|", text)
-                  if m:
+                  if m and m.group(1) is not None:
                       dimensions = m.group(1).strip()
 
               render_dir = p / "renders"
