@@ -2,6 +2,13 @@ name: PCB Designs Automation
 
 on:
   push:
+    paths:
+      - '**/*.kicad_pcb'
+      - '**/*.kicad_pro'
+      - '**/*.kicad_sch'
+      - '**/*.kicad_prl'
+      - '**/*.kicad_wks'
+      - '**/*.kicad_sym'
   workflow_dispatch:
 
 permissions:
@@ -24,6 +31,10 @@ jobs:
       - name: Find project directories
         id: find
         shell: bash
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -31,25 +42,56 @@ jobs:
           import os
           from pathlib import Path
 
-          projects = set()
+          def is_kicad_file(path: Path) -> bool:
+              return path.suffix.lower() in {
+                  ".kicad_pcb",
+                  ".kicad_pro",
+                  ".kicad_sch",
+                  ".kicad_prl",
+                  ".kicad_wks",
+                  ".kicad_sym",
+              }
 
-          for pattern in ("*.kicad_pcb", "*.kicad_pro"):
-              for f in Path(".").rglob(pattern):
-                  if ".history" in f.parts or ".git" in f.parts:
+          projects = set()
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          changed_paths = []
+
+          if event_name == "push":
+              before = os.environ.get("GITHUB_EVENT_BEFORE", "")
+              sha = os.environ.get("GITHUB_SHA", "")
+              if before and before != "0000000000000000000000000000000000000000":
+                  import subprocess
+                  changed_paths = subprocess.check_output(["git", "diff", "--name-only", before, sha], text=True, stderr=subprocess.DEVNULL).splitlines()
+              else:
+                  import subprocess
+                  changed_paths = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", "HEAD"], text=True, stderr=subprocess.DEVNULL).splitlines()
+
+              for p in changed_paths:
+                  path = Path(p.strip())
+                  if not path or ".history" in path.parts or ".git" in path.parts:
                       continue
-                  project = f.parent
-                  render_dir = project / "renders"
-                  has_render = (
-                      render_dir.exists()
-                      and any(
-                          file.is_file() and file.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-                          for file in render_dir.iterdir()
+                  if not is_kicad_file(path):
+                      continue
+                  projects.add(str(path.parent))
+
+          if not projects:
+              for pattern in ("*.kicad_pcb", "*.kicad_pro"):
+                  for f in Path(".").rglob(pattern):
+                      if ".history" in f.parts or ".git" in f.parts:
+                          continue
+                      project = f.parent
+                      render_dir = project / "renders"
+                      has_render = (
+                          render_dir.exists()
+                          and any(
+                              file.is_file() and file.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                              for file in render_dir.iterdir()
+                          )
                       )
-                  )
-                  if (project / "README.md").exists() and has_render:
-                      print(f"Skipping complete project: {project}")
-                      continue
-                  projects.add(str(project))
+                      if (project / "README.md").exists() and has_render:
+                          print(f"Skipping complete project: {project}")
+                          continue
+                      projects.add(str(project))
 
           projects = sorted(projects)
           payload = json.dumps(projects)
