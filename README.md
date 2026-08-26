@@ -6,8 +6,9 @@ A collection of completed KiCad PCB design projects with automatically generated
 
 | Project Title | Description |
 |---|---|
+| [Lfr Mcb](./LFR_MCB/README.md) | KiCad PCB design project. |
 
 ---
 
-_Automatically updated: 2026-08-26 14:27 UTC_
-_Total projects: 0_
+_Automatically updated: 2026-08-26 14:37 UTC_
+_Total projects: 1_
