@@ -2,13 +2,6 @@ name: PCB Designs Automation
 
 on:
   push:
-    paths:
-      - '**/*.kicad_pcb'
-      - '**/*.kicad_pro'
-      - '**/*.kicad_sch'
-      - '**/*.kicad_prl'
-      - '**/*.kicad_wks'
-      - '**/*.kicad_sym'
   workflow_dispatch:
 
 permissions:
