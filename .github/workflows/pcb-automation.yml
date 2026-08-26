@@ -9,725 +9,567 @@ on:
       - '**/*.kicad_pcb'
       - '.github/workflows/pcb-automation.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * 0'  # Weekly on Sunday 2 AM UTC
-  # Trigger manually: workflow_dispatch
 
 permissions:
   contents: write
 
-env:
-  PYTHON_VERSION: '3.11'
+concurrency:
+  group: pcb-automation-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  discover-projects:
+  discover:
     name: Discover KiCad Projects
     runs-on: ubuntu-latest
     outputs:
-      projects: ${{ steps.discover.outputs.projects }}
+      projects: ${{ steps.find.outputs.projects }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Discover KiCad Projects
-        id: discover
+      - name: Find project directories
+        id: find
+        shell: bash
         run: |
-          # Find all directories containing .kicad_pro files (excluding .history)
-          projects=()
-          while IFS= read -r -d '' file; do
-            dir=$(dirname "$file")
-            # Skip .history directories
-            if [[ "$dir" != *"/.history"* ]] && [[ "$dir" != ".history"* ]]; then
-              projects+=("$dir")
-            fi
-          done < <(find . -name "*.kicad_pro" -not -path "*/.history/*" -print0)
+          set -euo pipefail
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
 
-          # Convert to JSON array
-          if [ ${#projects[@]} -eq 0 ]; then
-            echo "projects=[]" >> $GITHUB_OUTPUT
-          else
-            json=$(printf '"%s",' "${projects[@]}")
-            json="[${json%,}]"
-            echo "projects=$json" >> $GITHUB_OUTPUT
-          fi
+          projects = set()
 
-          echo "Found projects: ${projects[*]}"
+          for pattern in ("*.kicad_pcb", "*.kicad_pro"):
+              for f in Path(".").rglob(pattern):
+                  if ".history" in f.parts or ".git" in f.parts:
+                      continue
+                  projects.add(str(f.parent))
 
-  process-project:
-    name: Process Project (${{ matrix.project }})
-    needs: discover-projects
-    if: needs.discover-projects.outputs.projects != '[]'
+          projects = sorted(projects)
+          print("projects=" + json.dumps(projects))
+          print("Found:", projects)
+          PY
+
+  process:
+    name: Process ${{ matrix.project }}
+    needs: discover
+    if: needs.discover.outputs.projects != '[]'
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        project: ${{ fromJson(needs.discover-projects.outputs.projects) }}
       fail-fast: false
-    outputs:
-      project_name: ${{ steps.meta.outputs.project_name }}
-      status: ${{ steps.process.outputs.status }}
-      components_count: ${{ steps.process.outputs.components_count }}
-      dimensions: ${{ steps.process.outputs.dimensions }}
-      renders: ${{ steps.process.outputs.renders }}
-      readme_path: ${{ steps.process.outputs.readme_path }}
-      error: ${{ steps.process.outputs.error }}
+      matrix:
+        project: ${{ fromJson(needs.discover.outputs.projects) }}
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install parser
+        run: pip install sexpdata
+
+      - name: Find KiCad files
+        id: files
+        shell: bash
+        env:
+          PROJECT: ${{ matrix.project }}
         run: |
-          pip install sexpdata pyyaml
+          set -euo pipefail
 
-      - name: Extract project metadata
-        id: meta
-        run: |
-          PROJECT_DIR="${{ matrix.project }}"
-          PROJECT_NAME=$(basename "$PROJECT_DIR")
+          pro=$(find "$PROJECT" -maxdepth 1 -type f -name '*.kicad_pro' -not -path '*/.history/*' | sort | head -1 || true)
+          sch=$(find "$PROJECT" -maxdepth 1 -type f -name '*.kicad_sch' -not -path '*/.history/*' | sort | head -1 || true)
+          pcb=$(find "$PROJECT" -maxdepth 1 -type f -name '*.kicad_pcb' -not -path '*/.history/*' | sort | head -1 || true)
 
-          # Find the .kicad_pro file
-          KICAD_PRO=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.kicad_pro" | head -1)
-          KICAD_SCH=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.kicad_sch" | head -1)
-          KICAD_PCB=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.kicad_pcb" | head -1)
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "pro=$pro" >> "$GITHUB_OUTPUT"
+          echo "sch=$sch" >> "$GITHUB_OUTPUT"
+          echo "pcb=$pcb" >> "$GITHUB_OUTPUT"
 
-          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
-          echo "kicad_pro=$KICAD_PRO" >> $GITHUB_OUTPUT
-          echo "kicad_sch=$KICAD_SCH" >> $GITHUB_OUTPUT
-          echo "kicad_pcb=$KICAD_PCB" >> $GITHUB_OUTPUT
-
-      - name: Parse KiCad files and generate README
-        id: process
-        run: |
-          python3 << 'EOF'
-          import os
-          import json
-          import sexpdata
-          from sexpdata import Symbol
-          import re
-          from pathlib import Path
-
-          PROJECT_DIR = "${{ matrix.project }}"
-          PROJECT_NAME = "${{ steps.meta.outputs.project_name }}"
-          KICAD_PRO = "${{ steps.meta.outputs.kicad_pro }}"
-          KICAD_SCH = "${{ steps.meta.outputs.kicad_sch }}"
-          KICAD_PCB = "${{ steps.meta.outputs.kicad_pcb }}"
-
-          def parse_sexp(filepath):
-              with open(filepath, 'r') as f:
-                  content = f.read()
-              return sexpdata.loads(content)
-
-          def extract_components(sch_data):
-              """Extract component info from schematic S-expression."""
-              components = []
-
-              def walk(obj):
-                  if isinstance(obj, list) and obj:
-                      if isinstance(obj[0], Symbol) and obj[0].value() == 'symbol':
-                          comp = {}
-                          for item in obj[1:]:
-                              if isinstance(item, list) and item:
-                                  if isinstance(item[0], Symbol):
-                                      key = item[0].value()
-                                      if key == 'lib_id':
-                                          comp['lib_id'] = str(item[1]) if len(item) > 1 else ''
-                                      elif key == 'property':
-                                          if len(item) >= 3:
-                                              prop_name = str(item[1]).strip('"')
-                                              prop_value = str(item[2]).strip('"')
-                                              if prop_name == 'Reference':
-                                                  comp['reference'] = prop_value
-                                              elif prop_name == 'Value':
-                                                  comp['value'] = prop_value
-                                              elif prop_name == 'Footprint':
-                                                  comp['footprint'] = prop_value
-                                              elif prop_name == 'Description':
-                                                  comp['description'] = prop_value
-                          # Only keep components with proper reference designators (e.g., R1, C1, D1, J1)
-                          # Filter out library symbols which have references like "R", "C", "D", "J" without numbers
-                          ref = comp.get('reference', '')
-                          if ref and re.match(r'^[A-Z]+\d+$', ref):
-                              components.append(comp)
-                      else:
-                          for item in obj:
-                              walk(item)
-                  elif isinstance(obj, list):
-                      for item in obj:
-                          walk(item)
-
-              walk(sch_data)
-              return components
-
-          def parse_pcb_dimensions(pcb_data):
-              """Extract board outline from PCB S-expression."""
-              edge_cuts = []
-
-              def walk(obj):
-                  if isinstance(obj, list) and obj:
-                      if isinstance(obj[0], Symbol):
-                          key = obj[0].value()
-                          # KiCad uses gr_rect for rectangles, gr_circle for arcs, gr_line for lines, gr_arc for arcs
-                          if key in ('gr_line', 'gr_arc', 'gr_rect', 'gr_circle', 'gr_poly'):
-                              layer = None
-                              for item in obj[1:]:
-                                  if isinstance(item, list) and item and isinstance(item[0], Symbol):
-                                      if item[0].value() == 'layer':
-                                          layer = str(item[1]).strip('"')
-                                          break
-                              if layer == 'Edge.Cuts':
-                                  edge_cuts.append(obj)
-                      for item in obj:
-                          if isinstance(item, list):
-                              walk(item)
-
-              walk(pcb_data)
-
-              # Calculate bounding box from edge cuts
-              min_x = min_y = float('inf')
-              max_x = max_y = float('-inf')
-
-              for item in edge_cuts:
-                  if not isinstance(item[0], Symbol):
-                      continue
-                  key = item[0].value()
-
-                  if key == 'gr_line':
-                      start = end = None
-                      for prop in item[1:]:
-                          if isinstance(prop, list) and prop and isinstance(prop[0], Symbol):
-                              if prop[0].value() == 'start':
-                                  start = (float(prop[1]), float(prop[2]))
-                              elif prop[0].value() == 'end':
-                                  end = (float(prop[1]), float(prop[2]))
-                      if start:
-                          min_x = min(min_x, start[0])
-                          min_y = min(min_y, start[1])
-                          max_x = max(max_x, start[0])
-                          max_y = max(max_y, start[1])
-                      if end:
-                          min_x = min(min_x, end[0])
-                          min_y = min(min_y, end[1])
-                          max_x = max(max_x, end[0])
-                          max_y = max(max_y, end[1])
-
-                  elif key == 'gr_arc':
-                      # Arc: center + radius
-                      center = None
-                      radius = None
-                      for prop in item[1:]:
-                          if isinstance(prop, list) and prop and isinstance(prop[0], Symbol):
-                              if prop[0].value() == 'center':
-                                  center = (float(prop[1]), float(prop[2]))
-                              elif prop[0].value() == 'radius':
-                                  radius = float(prop[1])
-                      if center and radius:
-                          cx, cy = center
-                          min_x = min(min_x, cx - radius)
-                          min_y = min(min_y, cy - radius)
-                          max_x = max(max_x, cx + radius)
-                          max_y = max(max_y, cy + radius)
-
-                  elif key == 'gr_rect':
-                      # Rectangle: start and end corners
-                      start = end = None
-                      for prop in item[1:]:
-                          if isinstance(prop, list) and prop and isinstance(prop[0], Symbol):
-                              if prop[0].value() == 'start':
-                                  start = (float(prop[1]), float(prop[2]))
-                              elif prop[0].value() == 'end':
-                                  end = (float(prop[1]), float(prop[2]))
-                      if start:
-                          min_x = min(min_x, start[0])
-                          min_y = min(min_y, start[1])
-                          max_x = max(max_x, start[0])
-                          max_y = max(max_y, start[1])
-                      if end:
-                          min_x = min(min_x, end[0])
-                          min_y = min(min_y, end[1])
-                          max_x = max(max_x, end[0])
-                          max_y = max(max_y, end[1])
-
-                  elif key == 'gr_circle':
-                      # Circle: center and end point (on circumference)
-                      center = end = None
-                      for prop in item[1:]:
-                          if isinstance(prop, list) and prop and isinstance(prop[0], Symbol):
-                              if prop[0].value() == 'center':
-                                  center = (float(prop[1]), float(prop[2]))
-                              elif prop[0].value() == 'end':
-                                  end = (float(prop[1]), float(prop[2]))
-                      if center and end:
-                          cx, cy = center
-                          ex, ey = end
-                          # Calculate radius from center to end point
-                          radius = ((ex - cx) ** 2 + (ey - cy) ** 2) ** 0.5
-                          min_x = min(min_x, cx - radius)
-                          min_y = min(min_y, cy - radius)
-                          max_x = max(max_x, cx + radius)
-                          max_y = max(max_y, cy + radius)
-
-                  elif key == 'gr_poly':
-                      # Polygon: list of points
-                      points = []
-                      for prop in item[1:]:
-                          if isinstance(prop, list) and prop and isinstance(prop[0], Symbol):
-                              if prop[0].value() == 'pts':
-                                  # pts contains list of (xy x y) points
-                                  for pt in prop[1:]:
-                                      if isinstance(pt, list) and pt and isinstance(pt[0], Symbol) and pt[0].value() == 'xy':
-                                          x = float(pt[1])
-                                          y = float(pt[2])
-                                          points.append((x, y))
-                      for px, py in points:
-                          min_x = min(min_x, px)
-                          min_y = min(min_y, py)
-                          max_x = max(max_x, px)
-                          max_y = max(max_y, py)
-
-              if min_x == float('inf'):
-                  return {"width_mm": 0, "height_mm": 0, "area_mm2": 0}
-
-              width = max_x - min_x
-              height = max_y - min_y
-              return {
-                  "width_mm": round(width, 2),
-                  "height_mm": round(height, 2),
-                  "area_mm2": round(width * height, 2),
-                  "min_x": round(min_x, 2),
-                  "min_y": round(min_y, 2),
-                  "max_x": round(max_x, 2),
-                  "max_y": round(max_y, 2)
-              }
-
-          def get_footprint_description(footprint):
-              """Map footprint to human-readable description."""
-              footprint_lower = footprint.lower()
-              desc_map = {
-                  'screw_terminal': 'Screw Terminal Block',
-                  'terminal_block': 'Terminal Block',
-                  'diode_tht': 'Through-Hole Diode',
-                  'd_a-405': 'Axial Diode (A-405 package)',
-                  'led_tht': 'Through-Hole LED',
-                  'led_d5': '5mm LED',
-                  'capacitor_tht': 'Through-Hole Capacitor',
-                  'cp_radial': 'Radial Electrolytic Capacitor',
-                  'resistor_tht': 'Through-Hole Resistor',
-                  'r_axial': 'Axial Resistor',
-                  'din0204': 'DIN0204 Axial Resistor',
-              }
-              for key, desc in desc_map.items():
-                  if key in footprint_lower:
-                      return desc
-              return footprint.replace('_', ' ').replace(':', ' - ')
-
-          def format_dimensions(dim):
-              if dim['width_mm'] > 0 and dim['height_mm'] > 0:
-                  return f"{dim['width_mm']} × {dim['height_mm']} mm"
-              return "Unknown"
-
-          def parse_project_info(proj_data):
-              """Extract project metadata from .kicad_pro JSON."""
-              info = {}
-              info['version'] = proj_data.get('meta', {}).get('version', 'unknown')
-              board = proj_data.get('board', {})
-              general = board.get('general', {})
-              info['thickness_mm'] = general.get('thickness', 1.6)
-              layer_presets = board.get('layer_presets', [])
-              if layer_presets:
-                  copper_layers = layer_presets[0].get('copper_layers', [])
-                  info['copper_layers'] = len(copper_layers)
-              else:
-                  info['copper_layers'] = 2
-              return info
-
-          # Main processing
-          result = {
-              "status": "success",
-              "components_count": 0,
-              "dimensions": "Unknown",
-              "thickness_mm": 1.6,
-              "copper_layers": 2,
-              "renders": [],
-              "readme_path": "",
-              "error": ""
-          }
-
-          try:
-              # Parse project file
-              if KICAD_PRO and os.path.exists(KICAD_PRO):
-                  with open(KICAD_PRO, 'r') as f:
-                      proj_data = json.load(f)
-                  proj_info = parse_project_info(proj_data)
-                  result["thickness_mm"] = proj_info['thickness_mm']
-                  result["copper_layers"] = proj_info['copper_layers']
-
-              # Parse schematic
-              components = []
-              if KICAD_SCH and os.path.exists(KICAD_SCH):
-                  sch_data = parse_sexp(KICAD_SCH)
-                  components = extract_components(sch_data)
-                  result["components_count"] = len(components)
-
-              # Parse PCB
-              dimensions = {"width_mm": 0, "height_mm": 0}
-              if KICAD_PCB and os.path.exists(KICAD_PCB):
-                  pcb_data = parse_sexp(KICAD_PCB)
-                  dimensions = parse_pcb_dimensions(pcb_data)
-                  result["dimensions"] = format_dimensions(dimensions)
-
-              # Generate component table markdown
-              comp_table = "| Reference | Value | Footprint | Description |\n"
-              comp_table += "|-----------|-------|-----------|-------------|\n"
-              for comp in sorted(components, key=lambda x: x.get('reference', '')):
-                  ref = comp.get('reference', '')
-                  val = comp.get('value', '')
-                  fp = comp.get('footprint', '')
-                  desc = comp.get('description') or get_footprint_description(fp)
-                  comp_table += f"| {ref} | {val} | {fp} | {desc} |\n"
-
-              # Find render files
-              renders_dir = Path(PROJECT_DIR) / "renders"
-              render_files = []
-              if renders_dir.exists():
-                  for ext in ['.png', '.gif', '.jpg', '.jpeg']:
-                      render_files.extend(renders_dir.glob(f"*{ext}"))
-              result["renders"] = [str(f.relative_to(PROJECT_DIR)) for f in render_files]
-
-              # Generate project README
-              readme_content = f"""# {PROJECT_NAME.replace('_', ' ').title()}
-
-## Description
-KiCad PCB design project: **{PROJECT_NAME.replace('_', ' ')}**
-
-## Board Dimensions
-- **Size**: {result['dimensions']}
-- **Area**: {dimensions.get('area_mm2', 0):.1f} mm²
-- **Thickness**: {result['thickness_mm']} mm
-- **Layers**: {result['copper_layers']} copper layers
-
-## Components ({result['components_count']} total)
-
-{comp_table}
-
-## Renders
-"""
-              # Add render images
-              for render in result["renders"]:
-                  name = Path(render).stem
-                  if 'top' in name.lower():
-                      readme_content += f"\n### Top View\n![Top View](./{render})\n"
-                  elif 'bottom' in name.lower():
-                      readme_content += f"\n### Bottom View\n![Bottom View](./{render})\n"
-                  elif 'rotating' in name.lower() or render.endswith('.gif'):
-                      readme_content += f"\n### 3D Rotation\n![3D Rotation](./{render})\n"
-                  else:
-                      readme_content += f"\n### {name}\n![{name}](./{render})\n"
-
-              if not result["renders"]:
-                  readme_content += "\n*Renders will be generated on next workflow run.*\n"
-
-              readme_content += f"""
-
-## Files
-- `{PROJECT_NAME}.kicad_pro` - Project configuration
-- `{PROJECT_NAME}.kicad_sch` - Schematic
-- `{PROJECT_NAME}.kicad_pcb` - PCB Layout
-
-## Generated
-This README was automatically generated by the PCB Designs automation workflow.
-"""
-
-              readme_path = os.path.join(PROJECT_DIR, "README.md")
-              with open(readme_path, 'w') as f:
-                  f.write(readme_content)
-
-              result["readme_path"] = readme_path
-
-          except Exception as e:
-              result["status"] = "error"
-              result["error"] = str(e)
-              import traceback
-              traceback.print_exc()
-
-          # Output results
-          print(f"::set-output name=status::{result['status']}")
-          print(f"::set-output name=components_count::{result['components_count']}")
-          print(f"::set-output name=dimensions::{result['dimensions']}")
-          print(f"::set-output name=renders::{json.dumps(result['renders'])}")
-          print(f"::set-output name=readme_path::{result['readme_path']}")
-          print(f"::set-output name=error::{result['error']}")
-          EOF
-
-      - name: Render PCB with kicad-render
-        if: steps.meta.outputs.kicad_pcb != ''
+      - name: Render PCB
+        if: steps.files.outputs.pcb != ''
         uses: linalinn/kicad-render@main
         with:
-          pcb_file: ${{ steps.meta.outputs.kicad_pcb }}
+          pcb_file: ${{ steps.files.outputs.pcb }}
           output_path: ${{ github.workspace }}/${{ matrix.project }}/renders
           background: transparent
           animation: gif
 
-      - name: Verify renders generated
-        id: verify_renders
+      - name: Generate project README
+        env:
+          PROJECT: ${{ matrix.project }}
+          KICAD_PRO: ${{ steps.files.outputs.pro }}
+          KICAD_SCH: ${{ steps.files.outputs.sch }}
+          KICAD_PCB: ${{ steps.files.outputs.pcb }}
+        shell: bash
         run: |
-          RENDERS_DIR="${{ github.workspace }}/${{ matrix.project }}/renders"
-          if [ -d "$RENDERS_DIR" ]; then
-            FILES=$(find "$RENDERS_DIR" -type f \( -name "*.png" -o -name "*.gif" \) | sed "s|$RENDERS_DIR/||" | tr '\n' ',' | sed 's/,$//')
-            echo "renders=$FILES" >> $GITHUB_OUTPUT
-          else
-            echo "renders=" >> $GITHUB_OUTPUT
-          fi
+          set -euo pipefail
 
-  update-main-readme:
-    name: Update Main README
-    needs: [discover-projects, process-project]
-    if: needs.discover-projects.outputs.projects != '[]'
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          import sexpdata
+          from sexpdata import Symbol
+
+          PROJECT = Path(os.environ["PROJECT"])
+          KICAD_PRO = Path(os.environ["KICAD_PRO"]) if os.environ["KICAD_PRO"] else None
+          KICAD_SCH = Path(os.environ["KICAD_SCH"]) if os.environ["KICAD_SCH"] else None
+          KICAD_PCB = Path(os.environ["KICAD_PCB"]) if os.environ["KICAD_PCB"] else None
+
+          def sval(x):
+              if isinstance(x, Symbol):
+                  return x.value()
+              return str(x).strip('"')
+
+          def parse(path):
+              return sexpdata.loads(path.read_text(encoding="utf-8"))
+
+          def walk(obj):
+              if isinstance(obj, list):
+                  yield obj
+                  for item in obj:
+                      yield from walk(item)
+
+          def extract_components():
+              if not KICAD_SCH or not KICAD_SCH.exists():
+                  return []
+
+              data = parse(KICAD_SCH)
+              components = {}
+
+              for item in walk(data):
+                  if not item or not isinstance(item[0], Symbol):
+                      continue
+                  if item[0].value() != "symbol":
+                      continue
+
+                  props = {}
+                  for child in item[1:]:
+                      if not (isinstance(child, list) and child):
+                          continue
+                      if not isinstance(child[0], Symbol):
+                          continue
+                      if child[0].value() == "property" and len(child) >= 3:
+                          props[sval(child[1])] = sval(child[2])
+
+                  ref = props.get("Reference", "")
+                  if re.fullmatch(r"[A-Za-z]+[0-9]+", ref):
+                      components[ref] = {
+                          "reference": ref,
+                          "value": props.get("Value", ""),
+                          "footprint": props.get("Footprint", ""),
+                          "description": props.get("Description", ""),
+                      }
+
+              return sorted(components.values(), key=lambda x: x["reference"])
+
+          def extract_board_info():
+              result = {
+                  "width": 0.0,
+                  "height": 0.0,
+                  "area": 0.0,
+                  "thickness": 1.6,
+                  "layers": 2,
+              }
+
+              if not KICAD_PCB or not KICAD_PCB.exists():
+                  return result
+
+              data = parse(KICAD_PCB)
+              min_x = float("inf")
+              min_y = float("inf")
+              max_x = float("-inf")
+              max_y = float("-inf")
+              copper = set()
+
+              def add_xy(x, y):
+                  nonlocal min_x, min_y, max_x, max_y
+                  try:
+                      x, y = float(x), float(y)
+                  except (TypeError, ValueError):
+                      return
+                  min_x = min(min_x, x)
+                  min_y = min(min_y, y)
+                  max_x = max(max_x, x)
+                  max_y = max(max_y, y)
+
+              for item in walk(data):
+                  if not item or not isinstance(item[0], Symbol):
+                      continue
+                  key = item[0].value()
+
+                  if key == "general":
+                      for child in item[1:]:
+                          if (isinstance(child, list) and len(child) >= 2
+                              and isinstance(child[0], Symbol)
+                              and child[0].value() == "thickness"):
+                              try:
+                                  result["thickness"] = float(child[1])
+                              except (TypeError, ValueError):
+                                  pass
+
+                  elif key == "layers":
+                      for child in item[1:]:
+                          if isinstance(child, list) and len(child) >= 3:
+                              name = sval(child[1])
+                              layer_type = sval(child[2])
+                              if name in {"F.Cu", "B.Cu"} or re.fullmatch(r"In\\d+\\.Cu", name):
+                                  if layer_type in {"signal", "power", "jumper"}:
+                                      copper.add(name)
+
+                  elif key in {"gr_line", "gr_arc", "gr_rect", "gr_poly", "gr_circle"}:
+                      layer = None
+                      for child in item[1:]:
+                          if (isinstance(child, list) and len(child) >= 2
+                              and isinstance(child[0], Symbol)
+                              and child[0].value() == "layer"):
+                              layer = sval(child[1])
+                              break
+                      if layer != "Edge.Cuts":
+                          continue
+
+                      for child in item[1:]:
+                          if not (isinstance(child, list) and child):
+                              continue
+                          if not isinstance(child[0], Symbol):
+                              continue
+                          k = child[0].value()
+
+                          if k in {"start", "end", "mid", "center"} and len(child) >= 3:
+                              add_xy(child[1], child[2])
+
+                          elif k == "pts":
+                              for pt in child[1:]:
+                                  if (isinstance(pt, list) and len(pt) >= 3
+                                      and isinstance(pt[0], Symbol)
+                                      and pt[0].value() == "xy"):
+                                      add_xy(pt[1], pt[2])
+
+              if min_x != float("inf"):
+                  result["width"] = round(max_x - min_x, 2)
+                  result["height"] = round(max_y - min_y, 2)
+                  result["area"] = round(result["width"] * result["height"], 2)
+
+              if copper:
+                  result["layers"] = len(copper)
+
+              return result
+
+          def clean(s):
+              return str(s).replace("|", "\\|").replace("\n", " ").strip()
+
+          title = re.sub(r"[_-]+", " ", PROJECT.name).strip().title() or "KiCad PCB Project"
+          description = f"KiCad PCB design project for {title}."
+
+          # Preserve an explicitly supplied description marker if the project
+          # README already contains one.
+          old_readme = PROJECT / "README.md"
+          if old_readme.exists():
+              old = old_readme.read_text(encoding="utf-8", errors="ignore")
+              m = re.search(
+                  r"<!--\\s*PROJECT_DESCRIPTION\\s*-->\\s*(.*?)\\s*<!--\\s*/PROJECT_DESCRIPTION\\s*-->",
+                  old, re.S | re.I
+              )
+              if m and m.group(1).strip():
+                  description = m.group(1).strip()
+
+          components = extract_components()
+          board = extract_board_info()
+
+          render_dir = PROJECT / "renders"
+          renders = sorted(
+              f for f in render_dir.iterdir()
+              if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+          ) if render_dir.exists() else []
+
+          lines = [
+              f"# {title}",
+              "",
+              "## Description",
+              "<!-- PROJECT_DESCRIPTION -->",
+              description,
+              "<!-- /PROJECT_DESCRIPTION -->",
+              "",
+              "## Board Specifications",
+              "",
+              "| Specification | Details |",
+              "|---|---|",
+              f"| Dimensions | {board['width']} × {board['height']} mm |",
+              f"| Area | {board['area']} mm² |",
+              f"| Thickness | {board['thickness']} mm |",
+              f"| Copper Layers | {board['layers']} |",
+              "",
+              f"## Components ({len(components)})",
+              "",
+              "| Reference | Value | Footprint | Description |",
+              "|---|---|---|---|",
+          ]
+
+          if components:
+              for c in components:
+                  lines.append(
+                      f"| {clean(c['reference'])} | {clean(c['value'])} | "
+                      f"{clean(c['footprint']) or '—'} | {clean(c['description']) or '—'} |"
+                  )
+          else:
+              lines.append("| — | No schematic components detected | — | — |")
+
+          lines += ["", "## PCB Renders", ""]
+
+          if renders:
+              for f in renders:
+                  rel = f.relative_to(PROJECT).as_posix()
+                  name = f.name.lower()
+                  if f.suffix.lower() == ".gif":
+                      lines += ["### Rotating 3D View", f"![Rotating PCB](./{rel})", ""]
+                  elif "top" in name:
+                      lines += ["### Top View", f"![Top View](./{rel})", ""]
+                  elif "bottom" in name:
+                      lines += ["### Bottom View", f"![Bottom View](./{rel})", ""]
+                  else:
+                      lines += [f"### {f.stem}", f"![{f.stem}](./{rel})", ""]
+          else:
+              lines += ["_No PCB renders were generated for this project._", ""]
+
+          lines += [
+              "## KiCad Files",
+              "",
+          ]
+
+          for f in sorted(PROJECT.iterdir()):
+              if f.is_file() and f.suffix.lower() in {
+                  ".kicad_pro", ".kicad_sch", ".kicad_pcb", ".kicad_prl"
+              }:
+                  lines.append(f"- `{f.name}`")
+
+          lines += [
+              "",
+              "---",
+              "",
+              "_This README is automatically generated by GitHub Actions._",
+          ]
+
+          (PROJECT / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          print(f"Generated {PROJECT / 'README.md'}")
+          print(json.dumps({
+              "title": title,
+              "description": description,
+              "components": len(components),
+              "dimensions": f"{board['width']} × {board['height']} mm",
+              "renders": [f.name for f in renders],
+          }, indent=2))
+          PY
+
+      - name: Remove .history from artifact
+        shell: bash
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          find "$PROJECT" -type d -name '.history' -prune -exec rm -rf {} +
+
+      - name: Stage processed project
+        shell: bash
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pcb-artifact
+          mkdir -p "/tmp/pcb-artifact/$(dirname "$PROJECT")"
+          cp -a "$PROJECT" "/tmp/pcb-artifact/$(dirname "$PROJECT")/"
+
+      - name: Upload processed project
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcb-project-${{ strategy.job-index }}
+          path: /tmp/pcb-artifact/
+          if-no-files-found: error
+          compression-level: 6
+
+  finalize:
+    name: Update repository documentation
+    needs: [discover, process]
+    if: always() && needs.discover.outputs.projects != '[]'
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Download all processed projects
+        uses: actions/download-artifact@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          pattern: pcb-project-*
+          path: .
+          merge-multiple: true
 
-      - name: Generate Main README
-        id: main_readme
+      - name: Generate main README and automation log
+        env:
+          PROJECTS: ${{ needs.discover.outputs.projects }}
+          PROCESS_RESULT: ${{ needs.process.result }}
+        shell: bash
         run: |
-          python3 << 'EOF'
+          set -euo pipefail
+
+          python3 <<'PY'
           import json
           import os
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
 
-          # Collect project results from matrix outputs
-          projects_json = '${{ toJson(needs.process-project.outputs) }}'
-          # The matrix outputs come as separate entries, need to parse from job outputs
-          # We'll reconstruct from the discovered projects and process-project results
+          projects = json.loads(os.environ["PROJECTS"])
+          process_result = os.environ.get("PROCESS_RESULT", "unknown")
 
-          # Get the discovered projects list
-          projects_list = json.loads('${{ needs.discover-projects.outputs.projects }}')
+          data = []
+          detail = {}
 
-          # For each project, we need to read the generated README or parse the output
-          # Since we can't easily access matrix outputs in this job, we'll re-parse
+          for project in projects:
+              p = Path(project)
+              readme = p / "README.md"
 
-          projects_data = []
-
-          for project_dir in projects_list:
-              project_name = os.path.basename(project_dir)
-              readme_path = os.path.join(project_dir, "README.md")
-
-              # Try to extract description from project README
-              description = "KiCad PCB design project"
-              components_count = 0
+              title = p.name.replace("_", " ").replace("-", " ").title()
+              description = "KiCad PCB design project."
+              components = 0
               dimensions = "Unknown"
-              if os.path.exists(readme_path):
-                  with open(readme_path, 'r') as f:
-                      content = f.read()
-                      # Extract first paragraph after ## Description
-                      import re
-                      match = re.search(r'## Description\s*\n(.*?)\n', content, re.DOTALL)
-                      if match:
-                          description = match.group(1).strip()[:100]
-                      # Extract components count
-                      match = re.search(r'Components \((\d+) total\)', content)
-                      if match:
-                          components_count = int(match.group(1))
-                      # Extract dimensions
-                      match = re.search(r'\*\*Size\*\*: ([^\n]+)', content)
-                      if match:
-                          dimensions = match.group(1)
+              renders = []
 
-              projects_data.append({
-                  "name": project_name,
-                  "title": project_name.replace('_', ' ').title(),
-                  "path": project_dir,
+              if readme.exists():
+                  text = readme.read_text(encoding="utf-8", errors="ignore")
+
+                  m = re.search(r"^#\\s+(.+)$", text, re.M)
+                  if m:
+                      title = m.group(1).strip()
+
+                  m = re.search(
+                      r"<!--\\s*PROJECT_DESCRIPTION\\s*-->\\s*(.*?)\\s*<!--\\s*/PROJECT_DESCRIPTION\\s*-->",
+                      text, re.S | re.I
+                  )
+                  if m:
+                      description = " ".join(m.group(1).split())
+
+                  m = re.search(r"^## Components \\((\\d+)\\)", text, re.M)
+                  if m:
+                      components = int(m.group(1))
+
+                  m = re.search(r"\\| Dimensions \\| ([^|]+) \\|", text)
+                  if m:
+                      dimensions = m.group(1).strip()
+
+              render_dir = p / "renders"
+              if render_dir.exists():
+                  renders = sorted(
+                      f.name for f in render_dir.iterdir()
+                      if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                  )
+
+              data.append({
+                  "title": title,
                   "description": description,
-                  "components": components_count,
-                  "dimensions": dimensions
+                  "path": project,
+                  "components": components,
+                  "dimensions": dimensions,
               })
 
-          # Generate main README
-          readme = """# PCB Designs
-
-A collection of KiCad PCB design projects with automated documentation and 3D renders.
-
-## Projects
-
-| Project | Components | Dimensions | Description |
-|---------|------------|------------|-------------|
-"""
-          for p in projects_data:
-              comp_str = str(p['components']) if p['components'] > 0 else "—"
-              readme += f"| [{p['title']}]({p['path']}) | {comp_str} | {p['dimensions']} | {p['description']} |\n"
-
-          readme += f"""
-
----
-
-*This README is automatically generated. Last updated: $(date -u +"%Y-%m-%d %H:%M UTC")*
-*Total projects: {len(projects_data)}*
-"""
-
-          with open("README.md", "w") as f:
-              f.write(readme)
-
-          print("Main README generated successfully")
-          print(f"Projects: {[p['name'] for p in projects_data]}")
-          EOF
-
-      - name: Commit and Push Changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Add all generated files
-          git add -A
-
-          # Check if there are changes to commit
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: auto-update project READMEs and main README [skip ci]"
-            git push
-            echo "Changes pushed successfully"
-          fi
-
-  log-execution:
-    name: Log Execution
-    needs: [discover-projects, process-project, update-main-readme]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Create execution log
-        id: log
-        run: |
-          python3 << 'EOF'
-          import json
-          import os
-          from datetime import datetime
-
-          # Gather results from previous jobs
-          run_id = "${{ github.run_id }}"
-          run_number = "${{ github.run_number }}"
-          commit_sha = "${{ github.sha }}"
-          workflow = "${{ github.workflow }}"
-          actor = "${{ github.actor }}"
-
-          # Parse project results
-          projects_outputs = {}
-          # Note: In a real scenario, we'd pass data between jobs via artifacts or outputs
-          # For now, we'll reconstruct from filesystem
-
-          projects_list = json.loads('${{ needs.discover-projects.outputs.projects }}')
-
-          projects_detail = {}
-          for project_dir in projects_list:
-              project_name = os.path.basename(project_dir)
-              readme_path = os.path.join(project_dir, "README.md")
-              renders_dir = os.path.join(project_dir, "renders")
-
-              renders = []
-              if os.path.exists(renders_dir):
-                  for f in os.listdir(renders_dir):
-                      if f.endswith(('.png', '.gif', '.jpg', '.jpeg')):
-                          renders.append(f)
-
-              # Count components from README
-              components_count = 0
-              dimensions = "Unknown"
-              thickness_mm = 1.6
-              copper_layers = 2
-              if os.path.exists(readme_path):
-                  with open(readme_path, 'r') as f:
-                      content = f.read()
-                      import re
-                      match = re.search(r'Components \((\d+) total\)', content)
-                      if match:
-                          components_count = int(match.group(1))
-                      match = re.search(r'\*\*Size\*\*: ([^\n]+)', content)
-                      if match:
-                          dimensions = match.group(1)
-                      match = re.search(r'\*\*Thickness\*\*: ([\d.]+) mm', content)
-                      if match:
-                          thickness_mm = float(match.group(1))
-                      match = re.search(r'\*\*Layers\*\*: (\d+) copper layers', content)
-                      if match:
-                          copper_layers = int(match.group(1))
-
-              projects_detail[project_name] = {
-                  "status": "success" if os.path.exists(readme_path) else "skipped",
-                  "components_found": components_count,
+              detail[title] = {
+                  "path": project,
+                  "status": "success" if readme.exists() else "missing",
+                  "components_found": components,
                   "dimensions": dimensions,
-                  "thickness_mm": thickness_mm,
-                  "copper_layers": copper_layers,
                   "renders_generated": renders,
-                  "readme_generated": os.path.exists(readme_path),
-                  "error": ""
+                  "readme_generated": readme.exists(),
+                  "error": "" if readme.exists() else "Project README missing after processing",
               }
 
-          log_entry = {
-              "timestamp": datetime.utcnow().isoformat() + "Z",
-              "run_id": run_id,
-              "run_number": int(run_number),
-              "commit_sha": commit_sha,
-              "workflow": workflow,
-              "triggered_by": actor,
-              "projects_processed": projects_list,
-              "projects": projects_detail,
-              "main_readme_updated": os.path.exists("README.md"),
-              "total_projects": len(projects_list),
+          data.sort(key=lambda x: x["title"].lower())
+
+          main = [
+              "# PCB Designs",
+              "",
+              "A collection of completed KiCad PCB design projects with automatically generated documentation and PCB renders.",
+              "",
+              "## Projects",
+              "",
+              "| Project Title | Description |",
+              "|---|---|",
+          ]
+
+          for item in data:
+              link = f"./{item['path']}/README.md"
+              main.append(
+                  f"| [{item['title']}]({link}) | {item['description'].replace('|', '\\\\|')} |"
+              )
+
+          main += [
+              "",
+              "---",
+              "",
+              f"_Automatically updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}_",
+              f"_Total projects: {len(data)}_",
+          ]
+
+          Path("README.md").write_text("\n".join(main) + "\n", encoding="utf-8")
+
+          log_path = Path("automation-log.json")
+          if log_path.exists():
+              try:
+                  log = json.loads(log_path.read_text(encoding="utf-8"))
+              except Exception:
+                  log = {"schema_version": 1, "runs": []}
+          else:
+              log = {"schema_version": 1, "runs": []}
+
+          entry = {
+              "timestamp": datetime.now(timezone.utc).isoformat(),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_number": int(os.environ.get("GITHUB_RUN_NUMBER", "0")),
+              "commit_sha": os.environ.get("GITHUB_SHA"),
+              "workflow": os.environ.get("GITHUB_WORKFLOW"),
+              "triggered_by": os.environ.get("GITHUB_ACTOR"),
+              "projects_processed": projects,
+              "process_result": process_result,
+              "projects": detail,
+              "main_readme_updated": True,
+              "total_projects": len(projects),
               "summary": {
-                  "total_components": sum(p.get('components_found', 0) for p in projects_detail.values()),
-                  "total_renders": sum(len(p.get('renders_generated', [])) for p in projects_detail.values()),
-                  "successful_projects": sum(1 for p in projects_detail.values() if p.get('status') == 'success')
-              }
+                  "total_components": sum(x["components_found"] for x in detail.values()),
+                  "total_renders": sum(len(x["renders_generated"]) for x in detail.values()),
+                  "successful_projects": sum(x["status"] == "success" for x in detail.values()),
+              },
           }
 
-          # Read existing log
-          log_file = "automation-log.json"
-          if os.path.exists(log_file):
-              with open(log_file, 'r') as f:
-                  try:
-                      log_data = json.load(f)
-                  except:
-                      log_data = {"runs": []}
-          else:
-              log_data = {"runs": []}
+          log["schema_version"] = 1
+          log.setdefault("runs", [])
+          log["runs"].append(entry)
+          log["runs"] = log["runs"][-100:]
 
-          log_data["runs"].append(log_entry)
+          log_path.write_text(json.dumps(log, indent=2) + "\n", encoding="utf-8")
 
-          # Keep last 100 runs
-          if len(log_data["runs"]) > 100:
-              log_data["runs"] = log_data["runs"][-100:]
+          print(f"Updated main README for {len(data)} project(s)")
+          print("Updated automation-log.json")
 
-          with open(log_file, 'w') as f:
-              json.dump(log_data, f, indent=2)
+          if process_result != "success":
+              print("WARNING: one or more matrix jobs did not finish successfully.")
+          PY
 
-          print(f"Log written to {log_file}")
-          print(json.dumps(log_entry, indent=2))
-          EOF
-
-      - name: Commit log file
+      - name: Commit generated files
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add automation-log.json
-          if ! git diff --staged --quiet; then
-            git commit -m "chore: update automation log [skip ci]"
-            git push
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No generated changes."
+            exit 0
           fi
+
+          git commit -m "docs: update PCB project documentation and renders [skip ci]"
+          git push
