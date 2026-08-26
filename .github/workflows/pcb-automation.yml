@@ -2,12 +2,6 @@ name: PCB Designs Automation
 
 on:
   push:
-    branches: [main, master]
-    paths:
-      - '**/*.kicad_pro'
-      - '**/*.kicad_sch'
-      - '**/*.kicad_pcb'
-      - '.github/workflows/pcb-automation.yml'
   workflow_dispatch:
 
 permissions:
