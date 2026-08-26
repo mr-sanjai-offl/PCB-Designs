@@ -331,7 +331,7 @@ jobs:
                       lines += [
                           "### Top View",
                           "<p align=\"center\">",
-                          f"<img src=\"./{rel}\" alt=\"Top View\" width=\"60%\" />",
+                          f"<img src=\"./{rel}\" alt=\"Top View\" width=\"100%\" />",
                           "</p>",
                           "",
                       ]
@@ -339,7 +339,7 @@ jobs:
                       lines += [
                           "### Bottom View",
                           "<p align=\"center\">",
-                          f"<img src=\"./{rel}\" alt=\"Bottom View\" width=\"60%\" />",
+                          f"<img src=\"./{rel}\" alt=\"Bottom View\" width=\"100%\" />",
                           "</p>",
                           "",
                       ]
