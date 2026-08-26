@@ -14,6 +14,7 @@ concurrency:
 jobs:
   discover:
     name: Discover KiCad Projects
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     outputs:
       projects: ${{ steps.find.outputs.projects }}
@@ -36,7 +37,19 @@ jobs:
               for f in Path(".").rglob(pattern):
                   if ".history" in f.parts or ".git" in f.parts:
                       continue
-                  projects.add(str(f.parent))
+                  project = f.parent
+                  render_dir = project / "renders"
+                  has_render = (
+                      render_dir.exists()
+                      and any(
+                          file.is_file() and file.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                          for file in render_dir.iterdir()
+                      )
+                  )
+                  if (project / "README.md").exists() and has_render:
+                      print(f"Skipping complete project: {project}")
+                      continue
+                  projects.add(str(project))
 
           projects = sorted(projects)
           payload = json.dumps(projects)
@@ -48,7 +61,7 @@ jobs:
   process:
     name: Process ${{ matrix.project }}
     needs: discover
-    if: needs.discover.outputs.projects != '[]'
+    if: github.actor != 'github-actions[bot]' && needs.discover.outputs.projects != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -432,7 +445,7 @@ jobs:
   finalize:
     name: Update repository documentation
     needs: [discover, process]
-    if: always() && needs.discover.outputs.projects != '[]'
+    if: github.actor != 'github-actions[bot]' && always() && needs.discover.outputs.projects != '[]'
     runs-on: ubuntu-latest
 
     steps:
@@ -588,6 +601,9 @@ jobs:
 
           log["schema_version"] = 1
           log.setdefault("runs", [])
+          run_id = entry.get("run_id")
+          if run_id is not None:
+              log["runs"] = [item for item in log["runs"] if item.get("run_id") != run_id]
           log["runs"].append(entry)
           log["runs"] = log["runs"][-100:]
 
