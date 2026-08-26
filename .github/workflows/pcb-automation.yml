@@ -116,6 +116,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -f "$PROJECT/README.md" ]; then
+            echo "Project README already exists; leaving it as-is."
+            exit 0
+          fi
+
           python3 <<'PY'
           import json
           import os
@@ -538,7 +543,7 @@ jobs:
           ]
 
           for item in data:
-              link = f"./{item['path']}/README.md"
+              link = f"./{item['path']}/README.md" if (Path(item['path']) / "README.md").exists() else f"./{item['path']}/"
               main.append(
                   f"| [{item['title']}]({link}) | {item['description'].replace('|', '\\\\|')} |"
               )

@@ -167,7 +167,62 @@ def clean_value(value):
     return str(value).replace("|", "\\|").replace("\n", " ").strip()
 
 
+def read_existing_project_metadata(project: Path):
+    readme = project / "README.md"
+    if not readme.exists():
+        return None
+
+    text = readme.read_text(encoding="utf-8", errors="ignore")
+    title = project.name.replace("_", " ").replace("-", " ").title() or "KiCad PCB Project"
+    description = f"KiCad PCB design project for {title}."
+    components = 0
+    dimensions = "Unknown"
+    renders = []
+
+    m = re.search(r"^#\s+(.+)$", text, re.M)
+    if m and m.group(1):
+        title = m.group(1).strip()
+
+    m = re.search(
+        r"<!--\s*PROJECT_DESCRIPTION\s*-->\s*(.*?)\s*<!--\s*/PROJECT_DESCRIPTION\s*-->",
+        text, re.S | re.I
+    )
+    if m and m.group(1):
+        description = " ".join(m.group(1).split())
+
+    m = re.search(r"^## Components \((\d+)\)", text, re.M)
+    if m and m.group(1):
+        try:
+            components = int(m.group(1))
+        except ValueError:
+            components = 0
+
+    m = re.search(r"\| Dimensions \| ([^|]+) \|", text)
+    if m and m.group(1):
+        dimensions = m.group(1).strip()
+
+    render_dir = project / "renders"
+    if render_dir.exists():
+        renders = sorted(
+            p for p in render_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        )
+
+    return {
+        "title": title,
+        "description": description,
+        "project": project.name,
+        "components": components,
+        "dimensions": dimensions,
+        "renders": [p.name for p in renders],
+    }
+
+
 def generate_project_readme(project: Path):
+    existing = read_existing_project_metadata(project)
+    if existing is not None:
+        return existing
+
     pro = find_kicad_file(project, ".kicad_pro")
     sch = find_kicad_file(project, ".kicad_sch")
     pcb = find_kicad_file(project, ".kicad_pcb")
@@ -300,7 +355,7 @@ def main():
             "title": info["title"],
             "description": info["description"],
             "path": project.name,
-            "link": f"./{project.name}/README.md",
+            "link": f"./{project.name}/README.md" if (project / "README.md").exists() else f"./{project.name}/",
             "components": info["components"],
             "dimensions": info["dimensions"],
             "renders": info["renders"],
