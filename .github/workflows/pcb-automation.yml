@@ -320,13 +320,37 @@ jobs:
                   rel = f.relative_to(PROJECT).as_posix()
                   name = f.name.lower()
                   if f.suffix.lower() == ".gif":
-                      lines += ["### Rotating 3D View", f"![Rotating PCB](./{rel})", ""]
+                      lines += [
+                          "### Rotating 3D View",
+                          "<p align=\"center\">",
+                          f"<img src=\"./{rel}\" alt=\"Rotating PCB\" width=\"60%\" />",
+                          "</p>",
+                          "",
+                      ]
                   elif "top" in name:
-                      lines += ["### Top View", f"![Top View](./{rel})", ""]
+                      lines += [
+                          "### Top View",
+                          "<p align=\"center\">",
+                          f"<img src=\"./{rel}\" alt=\"Top View\" width=\"60%\" />",
+                          "</p>",
+                          "",
+                      ]
                   elif "bottom" in name:
-                      lines += ["### Bottom View", f"![Bottom View](./{rel})", ""]
+                      lines += [
+                          "### Bottom View",
+                          "<p align=\"center\">",
+                          f"<img src=\"./{rel}\" alt=\"Bottom View\" width=\"60%\" />",
+                          "</p>",
+                          "",
+                      ]
                   else:
-                      lines += [f"### {f.stem}", f"![{f.stem}](./{rel})", ""]
+                      lines += [
+                          f"### {f.stem}",
+                          "<p align=\"center\">",
+                          f"<img src=\"./{rel}\" alt=\"{f.stem}\" width=\"60%\" />",
+                          "</p>",
+                          "",
+                      ]
           else:
               lines += ["_No PCB renders were generated for this project._", ""]
 
