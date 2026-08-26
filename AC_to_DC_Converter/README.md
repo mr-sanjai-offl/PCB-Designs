@@ -49,7 +49,6 @@ KiCad PCB design project for Ac To Dc Converter.
 ## KiCad Files
 
 - `ac_to_dc.kicad_pcb`
-- `ac_to_dc.kicad_prl`
 - `ac_to_dc.kicad_pro`
 - `ac_to_dc.kicad_sch`
 
