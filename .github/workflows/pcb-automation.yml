@@ -11,6 +11,7 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 2 * * 0'  # Weekly on Sunday 2 AM UTC
+  # Trigger manually: workflow_dispatch
 
 permissions:
   contents: write
