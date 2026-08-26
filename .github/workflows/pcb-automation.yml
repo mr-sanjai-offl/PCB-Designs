@@ -63,12 +63,17 @@ jobs:
               sha = os.environ.get("GITHUB_SHA", "")
               import subprocess
 
-              try:
-                  if before and before != "0000000000000000000000000000000000000000":
+              valid_before = bool(before and before != "0000000000000000000000000000000000000000")
+              valid_sha = bool(sha)
+
+              if valid_before and valid_sha:
+                  try:
+                      subprocess.check_output(["git", "rev-parse", "--verify", before], stderr=subprocess.DEVNULL)
+                      subprocess.check_output(["git", "rev-parse", "--verify", sha], stderr=subprocess.DEVNULL)
                       changed_paths = subprocess.check_output(["git", "diff", "--name-only", before, sha], text=True, stderr=subprocess.DEVNULL).splitlines()
-                  else:
+                  except subprocess.CalledProcessError:
                       changed_paths = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", "HEAD"], text=True, stderr=subprocess.DEVNULL).splitlines()
-              except subprocess.CalledProcessError:
+              else:
                   changed_paths = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", "HEAD"], text=True, stderr=subprocess.DEVNULL).splitlines()
 
               for p in changed_paths:
