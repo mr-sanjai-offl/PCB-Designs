@@ -6,9 +6,8 @@ A collection of completed KiCad PCB design projects with automatically generated
 
 | Project Title | Description |
 |---|---|
-| [Ac To Dc Converter](./AC_to_DC_Converter/README.md) | KiCad PCB design project. |
 
 ---
 
-_Automatically updated: 2026-08-26 09:29 UTC_
-_Total projects: 1_
+_Automatically updated: 2026-08-26 14:27 UTC_
+_Total projects: 0_
