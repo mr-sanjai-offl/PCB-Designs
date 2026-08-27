@@ -1,0 +1,87 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,10.0.5*%
+%TF.CreationDate,2026-08-27T22:15:09+05:30*%
+%TF.ProjectId,Queaky_STEM_Toy,51756561-6b79-45f5-9354-454d5f546f79,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Soldermask,Top*%
+%TF.FilePolarity,Negative*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 10.0.5) date 2026-08-27 22:15:09*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 Aperture macros list*
+%AMRoundRect*
+0 Rectangle with rounded corners*
+0 $1 Rounding radius*
+0 $2 $3 $4 $5 $6 $7 $8 $9 X,Y pos of 4 corners*
+0 Add a 4 corners polygon primitive as box body*
+4,1,4,$2,$3,$4,$5,$6,$7,$8,$9,$2,$3,0*
+0 Add four circle primitives for the rounded corners*
+1,1,$1+$1,$2,$3*
+1,1,$1+$1,$4,$5*
+1,1,$1+$1,$6,$7*
+1,1,$1+$1,$8,$9*
+0 Add four rect primitives between the rounded corners*
+20,1,$1+$1,$2,$3,$4,$5,0*
+20,1,$1+$1,$4,$5,$6,$7,0*
+20,1,$1+$1,$6,$7,$8,$9,0*
+20,1,$1+$1,$8,$9,$2,$3,0*%
+G04 Aperture macros list end*
+%ADD10RoundRect,0.250000X-0.550000X-0.550000X0.550000X-0.550000X0.550000X0.550000X-0.550000X0.550000X0*%
+%ADD11C,1.600000*%
+%ADD12C,2.000000*%
+%ADD13C,1.700000*%
+%ADD14R,1.700000X1.700000*%
+G04 APERTURE END LIST*
+D10*
+%TO.C,100uF*%
+X117846025Y-94942329D03*
+D11*
+X121346025Y-94942329D03*
+%TD*%
+%TO.C,1K*%
+X134696025Y-73942329D03*
+X121996025Y-73942329D03*
+%TD*%
+D12*
+%TO.C,1nF*%
+X122846025Y-78442329D03*
+X122846025Y-88442329D03*
+%TD*%
+D13*
+%TO.C,Out*%
+X131616025Y-95942329D03*
+D14*
+X129076025Y-95942329D03*
+%TD*%
+D11*
+%TO.C,IC 555*%
+X136156025Y-80132329D03*
+X136156025Y-82672329D03*
+X136156025Y-85212329D03*
+X136156025Y-87752329D03*
+X128536025Y-87752329D03*
+X128536025Y-85212329D03*
+X128536025Y-82672329D03*
+D10*
+X128536025Y-80132329D03*
+%TD*%
+D13*
+%TO.C,Buzz*%
+X137806025Y-95942329D03*
+D14*
+X140346025Y-95942329D03*
+%TD*%
+%TO.C,+ Bat -*%
+X117346025Y-84712329D03*
+D13*
+X117346025Y-82172329D03*
+%TD*%
+D11*
+%TO.C,10K*%
+X140696025Y-87792329D03*
+X140696025Y-75092329D03*
+%TD*%
+M02*
